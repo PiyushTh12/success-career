@@ -1005,7 +1005,12 @@ Make the questions realistic, specific to {request.target_role}, and progressive
 
 # --- Database setup --------------------------------------------------------
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./careernav.db")
+# Vercel filesystem is read-only, so we must use /tmp for SQLite
+default_db = "sqlite:///./careernav.db"
+if os.environ.get("VERCEL"):
+    default_db = "sqlite:////tmp/careernav.db"
+
+DATABASE_URL = os.getenv("DATABASE_URL", default_db)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
