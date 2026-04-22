@@ -1,5 +1,9 @@
 # CareerNav AI — Career Navigation Platform
 
+[![Deploy to Vercel](https://vercel.com/button)](https://success-career-navigator.vercel.app)
+
+**Live Demo:** [https://success-career-navigator.vercel.app](https://success-career-navigator.vercel.app)
+
 A full-stack AI-powered career navigation platform that helps students and early-career professionals identify skill gaps and get personalized learning roadmaps.
 
 ## Features
