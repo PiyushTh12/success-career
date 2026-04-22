@@ -11,8 +11,7 @@ from typing import Optional
 from dotenv import load_dotenv
 import anthropic
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
@@ -22,7 +21,7 @@ app = FastAPI(title="Career Navigator API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176", "http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5176"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1000,53 +999,20 @@ Make the questions realistic, specific to {request.target_role}, and progressive
 
 
 # ===========================================================================
-# Authentication — SQLite + JWT
+# Authentication — MongoDB + JWT
 # ===========================================================================
 
-# --- Database setup --------------------------------------------------------
+# --- MongoDB setup --------------------------------------------------------
 
-# Vercel filesystem is read-only, so we must use /tmp for SQLite
-default_db = "sqlite:///./careernav.db"
-if os.environ.get("VERCEL"):
-    default_db = "sqlite:////tmp/careernav.db"
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    # Local fallback for development
+    MONGODB_URI = "mongodb://localhost:27017"
 
-DATABASE_URL = os.getenv("DATABASE_URL", default_db)
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-engine_args = {}
-if DATABASE_URL.startswith("sqlite"):
-    engine_args["connect_args"] = {"check_same_thread": False}
-
-engine = create_engine(DATABASE_URL, **engine_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class UserModel(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    name = Column(String, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-
-# Create tables on startup
-Base.metadata.create_all(bind=engine)
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
+# Use a global client to avoid reconnecting on every request
+mongodb_client = AsyncIOMotorClient(MONGODB_URI)
+db = mongodb_client.careernav
+users_collection = db.users
 
 # --- Password hashing -------------------------------------------------------
 
@@ -1070,26 +1036,30 @@ JWT_EXPIRE_HOURS = 24
 bearer_scheme = HTTPBearer()
 
 
-def create_access_token(user_id: int, email: str) -> str:
+def create_access_token(user_id: str, email: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    payload = {"sub": str(user_id), "email": email, "exp": expire}
+    payload = {"sub": user_id, "email": email, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def get_current_user(
+async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-) -> UserModel:
+) -> dict:
     token = credentials.credentials
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id: int = int(payload["sub"])
+        user_email: str = payload.get("email")
+        if user_email is None:
+            raise HTTPException(status_code=401, detail="Invalid token payload.")
     except (JWTError, KeyError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
-    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    user = await users_collection.find_one({"email": user_email})
     if user is None:
         raise HTTPException(status_code=401, detail="User not found.")
+    
+    # Convert MongoDB _id to string
+    user["id"] = str(user["_id"])
     return user
 
 
@@ -1132,45 +1102,50 @@ class AuthResponse(BaseModel):
 # --- Auth endpoints ---------------------------------------------------------
 
 @app.post("/api/auth/register", response_model=AuthResponse, status_code=201)
-def register(request: RegisterRequest, db: Session = Depends(get_db)):
-    existing = db.query(UserModel).filter(UserModel.email == request.email).first()
+async def register(request: RegisterRequest):
+    existing = await users_collection.find_one({"email": request.email})
     if existing:
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
 
-    user = UserModel(
-        email=request.email,
-        name=request.name,
-        hashed_password=hash_password(request.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    user_doc = {
+        "email": request.email,
+        "name": request.name,
+        "hashed_password": hash_password(request.password),
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    result = await users_collection.insert_one(user_doc)
+    user_id = str(result.inserted_id)
 
-    token = create_access_token(user.id, user.email)
+    token = create_access_token(user_id, request.email)
     return AuthResponse(
         access_token=token,
-        user={"id": user.id, "email": user.email, "name": user.name},
+        user={"id": user_id, "email": request.email, "name": request.name},
     )
 
 
 @app.post("/api/auth/login", response_model=AuthResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(UserModel).filter(UserModel.email == request.email).first()
-    if not user or not verify_password(request.password, user.hashed_password):
+async def login(request: LoginRequest):
+    user = await users_collection.find_one({"email": request.email})
+    if not user or not verify_password(request.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
 
-    token = create_access_token(user.id, user.email)
+    user_id = str(user["_id"])
+    token = create_access_token(user_id, user["email"])
     return AuthResponse(
         access_token=token,
-        user={"id": user.id, "email": user.email, "name": user.name},
+        user={"id": user_id, "email": user["email"], "name": user["name"]},
     )
 
 
 @app.get("/api/auth/me")
-def me(current_user: UserModel = Depends(get_current_user)):
+async def me(current_user: dict = Depends(get_current_user)):
+    created_at = current_user.get("created_at")
+    member_since = created_at.strftime("%B %Y") if created_at and hasattr(created_at, 'strftime') else "Recent"
+    
     return {
-        "id": current_user.id,
-        "email": current_user.email,
-        "name": current_user.name,
-        "member_since": current_user.created_at.strftime("%B %Y"),
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "name": current_user["name"],
+        "member_since": member_since,
     }
