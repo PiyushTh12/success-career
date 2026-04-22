@@ -26,7 +26,7 @@ A full-stack AI-powered career navigation platform that helps students and early
 cd backend
 
 # Create virtual environment
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
@@ -38,11 +38,11 @@ cp .env.example .env
 # ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the server
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8001
 ```
 
-The backend will be available at http://localhost:8000
-API docs at http://localhost:8000/docs
+The backend will be available at http://localhost:8001
+API docs at http://localhost:8001/docs
 
 ### 2. Frontend Setup
 
@@ -71,7 +71,7 @@ docker-compose up --build
 ```
 
 - Frontend: http://localhost:5173
-- Backend: http://localhost:8000
+- Backend: http://localhost:8001
 
 ---
 

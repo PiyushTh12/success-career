@@ -8,7 +8,7 @@ import InterviewPrep from '../components/InterviewPrep';
 import LoadingSpinner from '../components/LoadingSpinner';
 import type { AnalysisResult, InterviewResult, ProfileData } from '../types';
 
-const API_BASE = 'http://localhost:8001';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 type Tab = 'gap' | 'roadmap' | 'interview';
 
